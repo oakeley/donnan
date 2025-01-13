@@ -1,78 +1,98 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[23]:
+
+
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
+from IPython.display import display, clear_output
+import ipywidgets as widgets
+
+
+# In[24]:
+
 
 class DonnanSimulation:
     def __init__(self):
-        # System constants
-        self.R = 8.314  # Gas constant (J/mol·K)
-        self.T = 310.15  # Temperature (K) - body temperature
-        self.F = 96485  # Faraday constant (C/mol)
+        # System constants - adjusted for more visible effects
+        self.R = 8.314 # Universal gas constant (J/mol·K) - used in osmotic pressure calculations
+        self.T = 310.15 # Temperature in Kelvin (equivalent to 37°C, normal body temperature)
+        self.F = 96485 # Faraday constant (C/mol) - used in membrane potential calculations
+        self.P_w = 1e-10  # Water permeability coefficient (m/s) - how easily water crosses the capillary membrane
+        self.A = 1e-4 # Surface area of the membrane (m²) - representative area of capillary wall in contact with tissue
         
-        # Membrane properties - adjusted for more gradual changes
-        self.P_w = 1e-9  # Water permeability (m/s)
-        self.A = 1e-4    # Surface area (m²)
+        # Initial volumes
+        self.V_i = 1.0e-6 # Initial interstitial fluid volume (m³) - fluid volume in tissue space
+        self.V_c = 1.2e-6 # Initial capillary volume (m³) - blood vessel volume
+        self.total_volume = self.V_i + self.V_c # Sum of interstitial and capillary volumes (conservation of total fluid)
         
-        # Initial conditions
-        self.V_i = 1.0e-6  # Initial interstitial volume (m³)
-        self.V_c = 1.2e-6  # Initial capillary volume (m³)
-        self.total_volume = self.V_i + self.V_c
+        # Initial ion concentrations (mol/m³) - adjusted for better visibility
+        self.Na_c = 145 # Capillary sodium - normal blood sodium level
+        self.Na_i = 142 # Interstitial sodium - slightly lower than blood
+        self.Cl_c = 110 # Capillary chloride - normal blood chloride level
+        self.Cl_i = 108 # Interstitial chloride - slightly lower than blood
         
-        # Fixed protein concentrations (mol/m³)
-        self.P_c = 1.0   # Capillary protein concentration
-        self.P_i = 0.6   # Interstitial protein concentration
-        
-        # Initial ion concentrations (mol/m³)
-        self.Na_c = 145  # Capillary sodium
-        self.Na_i = 140  # Interstitial sodium - slight gradient
-        self.Cl_c = 110  # Capillary chloride
-        self.Cl_i = 108  # Interstitial chloride - slight gradient
+        # Fixed interstitial protein (mol/m³)
+        self.P_i = 0.2  # Lowered to create bigger gradient potential
+
+    def assess_edema_risk(self, volume_change, time_constant):
+        if volume_change > 15:
+            risk = "High"
+            explanation = "Significant volume increase indicates high risk of edema formation"
+            color = 'red'
+        elif volume_change > 10:
+            risk = "Moderate"
+            explanation = "Volume increase suggests potential for edema development"
+            color = 'orange'
+        elif volume_change > 5:
+            risk = "Low"
+            explanation = "Minor volume changes indicate low risk of edema"
+            color = 'yellow'
+        else:
+            risk = "Normal"
+            explanation = "Volume changes within normal physiological range"
+            color = 'green'
+            
+        if time_constant < 1000:
+            speed = "rapid"
+        else:
+            speed = "gradual"
+            
+        return risk, explanation, color, speed
 
     def calculate_osmotic_pressure(self, c1, c2):
-        """Calculate osmotic pressure difference between two compartments"""
         return self.R * self.T * (c1 - c2)
 
-    def calculate_membrane_potential(self, Na_i, Na_c, Cl_i, Cl_c):
-        """Calculate membrane potential using the Goldman equation"""
-        return (self.R * self.T / self.F) * np.log((Na_c + Cl_i) / (Na_i + Cl_c))
-
-    def system_dynamics(self, t, state):
-        """Define system dynamics for numerical integration"""
+    def system_dynamics(self, t, state, P_c):
         V_i, Na_i, Cl_i = state
         
-        # Calculate capillary values maintaining total volume conservation
         V_c = self.total_volume - V_i
         
-        # Ensure volumes stay within physical bounds
         if V_i <= 0.1e-6 or V_i >= 1.9e-6:
             return [0, 0, 0]
             
-        # Calculate concentrations in capillary with volume adjustment
         Na_c = self.Na_c * self.V_c / V_c
         Cl_c = self.Cl_c * self.V_c / V_c
         
-        # Calculate driving forces
-        pi_protein = self.calculate_osmotic_pressure(self.P_c, self.P_i)
-        pi_ions = self.calculate_osmotic_pressure(Na_c + Cl_c, Na_i + Cl_i)
-        E_m = self.calculate_membrane_potential(Na_i, Na_c, Cl_i, Cl_c)
+        pi_protein = self.calculate_osmotic_pressure(P_c, self.P_i) * 0.5
+        pi_ions = self.calculate_osmotic_pressure(Na_c + Cl_c, Na_i + Cl_i) * 0.3
         
-        # Volume flux with nonlinear dampening
-        J_v = self.P_w * self.A * (pi_protein + pi_ions) * (1 - abs(V_i - self.V_i) / self.V_i)
+        J_v = self.P_w * self.A * (pi_protein + pi_ions) * np.exp(-abs(V_i - self.V_i) / self.V_i)
         
-        # Ion fluxes with concentration-dependent terms
         dV_i_dt = J_v
-        dNa_i_dt = -Na_i * J_v / V_i + 0.1 * (Na_c - Na_i)
-        dCl_i_dt = -Cl_i * J_v / V_i + 0.1 * (Cl_c - Cl_i)
+        dNa_i_dt = -Na_i * J_v / V_i + 0.05 * (Na_c - Na_i)
+        dCl_i_dt = -Cl_i * J_v / V_i + 0.05 * (Cl_c - Cl_i)
         
         return [dV_i_dt, dNa_i_dt, dCl_i_dt]
 
-    def simulate(self, t_span):
-        """Run simulation for given time span"""
+    def simulate(self, P_c, t_span=1800):  # 30 minutes
         y0 = [self.V_i, self.Na_i, self.Cl_i]
-        t = np.linspace(0, t_span, 1000)
+        t = np.linspace(0, t_span, 300)
         
         solution = solve_ivp(
-            self.system_dynamics,
+            lambda t, y: self.system_dynamics(t, y, P_c),
             [0, t_span],
             y0,
             t_eval=t,
@@ -83,89 +103,132 @@ class DonnanSimulation:
         
         return solution.t, solution.y[0], solution.y[1], solution.y[2]
 
-    def analyze_results(self, t, V_i, Na_i, Cl_i):
-        """Analyze simulation results and return key metrics"""
-        # Calculate relative volume change
+
+
+# In[25]:
+
+
+def create_interactive_simulation():
+    sim = DonnanSimulation()
+    
+    protein_slider = widgets.FloatSlider(
+        value=0.8,
+        min=0.2,
+        max=10.0,
+        step=0.2,
+        description='Capillary Protein:',
+        style={'description_width': 'initial'},
+        layout={'width': '50%'}
+    )
+    
+    output_plots = widgets.Output()
+    output_text = widgets.Output()
+    
+    def update(change):
+        P_c = change['new']
+        t, V_i, Na_i, Cl_i = sim.simulate(P_c)
+        
         volume_change_percent = ((V_i[-1] - V_i[0]) / V_i[0]) * 100
-        
-        # Calculate final membrane potential
-        final_V_c = self.total_volume - V_i[-1]
-        Na_c_final = self.Na_c * self.V_c / final_V_c
-        Cl_c_final = self.Cl_c * self.V_c / final_V_c
-        membrane_potential = self.calculate_membrane_potential(
-            Na_i[-1], Na_c_final, Cl_i[-1], Cl_c_final
-        )
-        
-        # Calculate time to reach 63% of final volume change (time constant)
         target_volume = V_i[0] + 0.63 * (V_i[-1] - V_i[0])
         time_constant = t[np.argmin(np.abs(V_i - target_volume))]
         
-        return {
-            'volume_change_percent': volume_change_percent,
-            'membrane_potential_mV': membrane_potential * 1000,  # Convert to mV
-            'time_constant_s': time_constant,
-            'final_Na_ratio': Na_i[-1] / Na_c_final,
-            'final_Cl_ratio': Cl_i[-1] / Cl_c_final
-        }
-
-    def plot_results(self, t, V_i, Na_i, Cl_i, metrics):
-        """Plot simulation results with analysis"""
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
+        # Get risk assessment
+        risk, explanation, color, speed = sim.assess_edema_risk(volume_change_percent, time_constant)
         
-        # Volume changes
-        ax1.plot(t, V_i * 1e6, 'b-', label='Interstitial Volume')
-        ax1.set_xlabel('Time (s)')
-        ax1.set_ylabel('Volume (µL)')
-        ax1.set_title(f'Interstitial Volume Changes\nTotal Volume Change: {metrics["volume_change_percent"]:.1f}%')
-        ax1.grid(True)
-        ax1.legend()
+        with output_plots:
+            clear_output(wait=True)
+            
+            fig = plt.figure(figsize=(12, 10))
+            gs = plt.GridSpec(3, 2, figure=fig)
+            
+            # Main volume plot
+            ax1 = fig.add_subplot(gs[0, :])
+            volume_percent = ((V_i - V_i[0]) / V_i[0]) * 100
+            ax1.plot(t/60, volume_percent, 'b-', linewidth=2)
+            ax1.set_xlabel('Time (minutes)')
+            ax1.set_ylabel('Volume Change (%)')
+            ax1.set_title('Tissue Volume Change Over Time')
+            ax1.grid(True)
+            
+            # Ion concentration changes
+            ax2 = fig.add_subplot(gs[1, :])
+            ax2.plot(t/60, Na_i - sim.Na_i, 'r-', label='ΔNa⁺', linewidth=2)
+            ax2.plot(t/60, Cl_i - sim.Cl_i, 'g-', label='ΔCl⁻', linewidth=2)
+            ax2.set_xlabel('Time (minutes)')
+            ax2.set_ylabel('Ion Change (mol/m³)')
+            ax2.set_title('Ion Concentration Changes')
+            ax2.grid(True)
+            ax2.legend()
+
+            # Rate of volume change
+            ax3 = fig.add_subplot(gs[2, 0])
+            dV_dt = np.gradient(volume_percent, t/60)
+            ax3.plot(t/60, dV_dt, 'purple', linewidth=2)
+            ax3.set_xlabel('Time (minutes)')
+            ax3.set_ylabel('Rate (%/min)')
+            ax3.set_title('Rate of Volume Change')
+            ax3.grid(True)
+
+            # Final state diagram
+            ax4 = fig.add_subplot(gs[2, 1])
+            ax4.axis('equal')
+            ax4.set_xlim(-1, 1)
+            ax4.set_ylim(-1, 1)
+            
+            vessel = plt.Circle((0, 0), 0.3, color='red', alpha=0.3)
+            tissue = plt.Circle((0, 0), 0.8, color='blue', alpha=0.2)
+            ax4.add_patch(vessel)
+            ax4.add_patch(tissue)
+            
+            if volume_change_percent > 0:
+                ax4.arrow(0.3, 0, 0.2, 0, head_width=0.1, head_length=0.1, fc='b', ec='b', alpha=0.6)
+            
+            ax4.text(-0.2, 0, f'P_c={P_c:.1f}', fontsize=10)
+            ax4.text(0.4, 0, f'ΔV={volume_change_percent:.1f}%', fontsize=10)
+            
+            ax4.set_title('Final State')
+            ax4.axis('off')
+            
+            plt.tight_layout()
+            display(fig)
+            plt.close()
         
-        # Ion concentrations
-        ax2.plot(t, Na_i, 'r-', label='Na⁺')
-        ax2.plot(t, Cl_i, 'g-', label='Cl⁻')
-        ax2.set_xlabel('Time (s)')
-        ax2.set_ylabel('Concentration (mol/m³)')
-        ax2.set_title(f'Ion Concentrations\nFinal Membrane Potential: {metrics["membrane_potential_mV"]:.1f} mV')
-        ax2.grid(True)
-        ax2.legend()
-        
-        # Add analysis text
-        plt.figtext(0.02, 0.02, 
-                   f'Analysis Metrics:\n' +
-                   f'Time Constant: {metrics["time_constant_s"]:.1f} s\n' +
-                   f'Final Na⁺ Ratio (i/c): {metrics["final_Na_ratio"]:.3f}\n' +
-                   f'Final Cl⁻ Ratio (i/c): {metrics["final_Cl_ratio"]:.3f}',
-                   fontsize=10, bbox=dict(facecolor='white', alpha=0.8))
-        
-        plt.tight_layout()
-        return fig
+        with output_text:
+            clear_output(wait=True)
+            print(f"\nProtein Gradient Analysis:")
+            print(f"------------------------")
+            print(f"Capillary protein: {P_c:.1f} mol/m³")
+            print(f"Interstitial protein: {sim.P_i:.1f} mol/m³")
+            print(f"Gradient: {P_c - sim.P_i:.1f} mol/m³")
+            print(f"\nVolume Changes:")
+            print(f"------------------------")
+            print(f"Total volume change: {volume_change_percent:.1f}%")
+            print(f"Maximum rate: {np.max(np.abs(dV_dt)):.2f}%/min")
+            print(f"Time Constant: {time_constant/60:.1f} minutes")
+            print(f"\nIon Changes:")
+            print(f"------------------------")
+            print(f"Na⁺ change: {Na_i[-1] - sim.Na_i:.1f} mol/m³")
+            print(f"Cl⁻ change: {Cl_i[-1] - sim.Cl_i:.1f} mol/m³")
+            print(f"\nRisk Assessment:")
+            print(f"------------------------")
+            print(f"Edema Risk: {risk} ({color})")
+            print(f"Assessment: {explanation}")
+            print(f"Rate of Change: Changes occur at a {speed} rate")
+    
+    protein_slider.observe(update, names='value')
+    update({'new': protein_slider.value})
+    
+    display(widgets.VBox([
+        protein_slider,
+        output_plots,
+        output_text
+    ]))
 
-# Run simulation
-sim = DonnanSimulation()
-t, V_i, Na_i, Cl_i = sim.simulate(3600)  # Simulate for 1 hour
-metrics = sim.analyze_results(t, V_i, Na_i, Cl_i)
+create_interactive_simulation()
 
-# Plot and display results
-sim.plot_results(t, V_i, Na_i, Cl_i, metrics)
-plt.show()
 
-# Print analysis
-print("\nDonnan Effect Simulation Analysis:")
-print(f"1. Volume Changes:")
-print(f"   - Total volume change: {metrics['volume_change_percent']:.1f}%")
-print(f"   - System time constant: {metrics['time_constant_s']:.1f} seconds")
-print(f"\n2. Ion Distribution:")
-print(f"   - Final Na⁺ ratio (interstitial/capillary): {metrics['final_Na_ratio']:.3f}")
-print(f"   - Final Cl⁻ ratio (interstitial/capillary): {metrics['final_Cl_ratio']:.3f}")
-print(f"   - Final membrane potential: {metrics['membrane_potential_mV']:.1f} mV")
+# In[ ]:
 
-if metrics['volume_change_percent'] > 0:
-    direction = "increased"
-else:
-    direction = "decreased"
 
-print(f"\nKey Findings:")
-print(f"The interstitial volume {direction} by {abs(metrics['volume_change_percent']):.1f}% over one hour,")
-print(f"reaching 63% of this change in {metrics['time_constant_s']:.1f} seconds.")
-print(f"The final membrane potential of {metrics['membrane_potential_mV']:.1f} mV indicates")
-print(f"a stable Donnan equilibrium was established between the compartments.")
+
+
